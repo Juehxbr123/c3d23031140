@@ -1,9 +1,10 @@
 import asyncio
 import logging
+import mimetypes
 from pathlib import Path
 from typing import Any, Optional
 
-from aiohttp import web
+from aiohttp import ClientSession, ClientTimeout, web
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ContentType
 from aiogram.filters import CommandStart
@@ -12,6 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
+    BufferedInputFile,
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -26,6 +28,7 @@ logger = logging.getLogger("chel3d_bot")
 
 UPLOADS_DIR = Path("uploads")
 UPLOADS_DIR.mkdir(exist_ok=True)
+MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 
 
 def user_full_name(user: Any) -> str:
@@ -190,7 +193,8 @@ async def send_step(
     if ref:
         try:
             if ref.startswith("http://") or ref.startswith("https://"):
-                return await message.answer_photo(photo=ref, caption=text, reply_markup=keyboard)
+                photo_file = await fetch_image(ref)
+                return await message.answer_photo(photo=photo_file, caption=text, reply_markup=keyboard)
 
             p = Path(ref)
             if p.exists() and p.is_file():
@@ -205,6 +209,42 @@ async def send_step(
             logger.exception("Не удалось отправить фото — отправляю текстом")
 
     return await message.answer(text, reply_markup=keyboard)
+
+
+async def fetch_image(url: str) -> BufferedInputFile:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        )
+    }
+    timeout = ClientTimeout(total=15)
+
+    try:
+        async with ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, allow_redirects=True) as response:
+                response.raise_for_status()
+
+                content_type = (response.headers.get("Content-Type") or "").lower()
+                if "image/" not in content_type:
+                    raise ValueError(f"URL does not point to image content: {content_type}")
+
+                content_length_raw = response.headers.get("Content-Length")
+                if content_length_raw and int(content_length_raw) > MAX_IMAGE_SIZE_BYTES:
+                    raise ValueError("Image is too large")
+
+                image_bytes = bytearray()
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    image_bytes.extend(chunk)
+                    if len(image_bytes) > MAX_IMAGE_SIZE_BYTES:
+                        raise ValueError("Image exceeds 10MB limit")
+
+                extension = mimetypes.guess_extension(content_type.split(";")[0].strip()) or ".jpg"
+                return BufferedInputFile(bytes(image_bytes), filename=f"step_image{extension}")
+    except Exception:
+        logger.exception("Не удалось скачать изображение по URL: %s", url)
+        raise
 
 
 async def send_step_cb(
@@ -243,7 +283,6 @@ def payload_summary(payload: dict[str, Any]) -> str:
     field_map = {
         "technology": "Технология",
         "material": "Материал",
-        "material_custom": "Свой материал",
         "scan_type": "Тип сканирования",
         "idea_type": "Категория",
         "description": "Описание",
@@ -376,16 +415,6 @@ async def render_step(cb: CallbackQuery, state: FSMContext, step: str, from_back
                 get_cfg("text_select_material", "Выберите материал:"),
             ),
             step_keyboard_for_print(payload),
-            print_photo_ref(payload),
-        )
-        return
-
-    if step == "print_material_custom":
-        await state.update_data(waiting_text="material_custom")
-        await send_step_cb(
-            cb,
-            get_cfg("text_describe_material", "Опишите материал/смолу свободным текстом:"),
-            kb([nav_row()]),
             print_photo_ref(payload),
         )
         return
@@ -729,8 +758,9 @@ async def on_set(cb: CallbackQuery, state: FSMContext) -> None:
 
     if field == "material":
         if "🤔" in value:
-            await render_step(cb, state, "print_material_custom")
-            return
+            payload[field] = "Другой"
+            await state.update_data(payload=payload)
+            await persist(state)
         await render_step(cb, state, "attach_file")
         return
 
@@ -756,22 +786,6 @@ async def on_text(message: Message, state: FSMContext) -> None:
         return
 
     payload: dict[str, Any] = st.get("payload", {})
-
-    if waiting == "material_custom":
-        user_text = (message.text or "").strip()
-        payload["material_custom"] = user_text
-        await state.update_data(payload=payload, waiting_text=None)
-        await persist(state)
-        if st.get("order_id") and user_text:
-            try:
-                database.add_order_message(int(st["order_id"]), "in", user_text)
-            except Exception:
-                logger.exception("Не удалось сохранить входящее сообщение (material_custom)")
-        await send_step(message, "Принято ✅", kb([nav_row()]))
-
-        fake_cb = CallbackQuery(id="0", from_user=message.from_user, chat_instance="0", message=message, data="")
-        await render_step(fake_cb, state, "attach_file")
-        return
 
     if waiting == "description":
         user_text = (message.text or "").strip()
