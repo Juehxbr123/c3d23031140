@@ -1,0 +1,60 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: chel3d_mysql
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DB}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - appnet
+
+  backend:
+    image: ghcr.io/juehxbr123/c3d23031140-backend:latest
+    container_name: chel3d_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - mysql
+    ports:
+      - "8000:8000"
+    networks:
+      - appnet
+
+  frontend:
+    image: ghcr.io/juehxbr123/c3d23031140-frontend:latest
+    container_name: chel3d_frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    networks:
+      - appnet
+
+  bot:
+    image: ghcr.io/juehxbr123/c3d23031140-bot:latest
+    container_name: chel3d_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - backend
+    networks:
+      - appnet
+
+volumes:
+  mysql_data:
+
+networks:
+  appnet:
+    driver: bridge
