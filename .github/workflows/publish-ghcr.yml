@@ -11,8 +11,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  OWNER: ${{ github.repository_owner }}
-  REPO: ${{ github.event.repository.name }}
+  OWNER: juehxbr123
+  REPO: c3d23031140
 
 jobs:
   build-and-push:
